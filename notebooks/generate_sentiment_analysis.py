@@ -46,7 +46,7 @@ if DATASET == 'SST':
     HIDDEN_DIM = 256  # TSM: 150
     G_REC = None
     N_EPOCHS = 500
-    DROPOUT = 0.5
+    DROPOUT = 0
 
     # RNN_TYPE = 'RNN'
     # BATCH_SIZE = 64
@@ -65,7 +65,7 @@ elif DATASET == 'IMDB':
     N_EPOCHS = 500
     EMB_DIM = [50, 100, 200, 300][3]
     G_REC = None
-    DROPOUT = 0.2  # TSM: 0.5
+    DROPOUT = 0  # TSM: 0.5
 # Network parameters
 BIDIRECTIONAL = False  # TSM: F, T
 WEIGHT_DECAY = 0  # TSM: 0
@@ -952,7 +952,7 @@ if DATASET == 'SST':
     HIDDEN_DIM = 256       # TSM: 150
     G_REC = None
     N_EPOCHS = 500
-    DROPOUT = 0.5
+    DROPOUT = 0
 
     # RNN_TYPE = 'RNN'
     # BATCH_SIZE = 64
@@ -971,7 +971,7 @@ elif DATASET == 'IMDB':
     N_EPOCHS = 500
     EMB_DIM = [50, 100, 200, 300][3]
     G_REC = None
-    DROPOUT = 0.2           # TSM: 0.5
+    DROPOUT = 0           # TSM: 0.5
 # Network parameters
 BIDIRECTIONAL = False       # TSM: F, T
 WEIGHT_DECAY = 0            # TSM: 0

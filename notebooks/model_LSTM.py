@@ -161,6 +161,8 @@ class RNN(nn.Module):
         epsilon = 1
         V = {}
         grad = 0
+        h_stack = []
+        c_stack = []
         with torch.no_grad():
             for i in range(self.rnn.num_layers):
                 h, c_t_1 = hx[i]
@@ -238,7 +240,11 @@ class RNN(nn.Module):
                 vb_ih = torch.stack([vb_ii, vb_if, vb_ig, vb_io])
                 vb_hh = torch.stack([vb_hi, vb_hf, vb_hg, vb_ho])
                 V[i] = (vw_ih, vw_hh, vb_ih, vb_hh)
-        packed_output, (hidden, cell) = x, (h, c_t)
+                h_stack.append(h)
+                c_stack.append(c_t)
+        packed_output, (hidden, cell) = x, (torch.stack(h_stack, dim=0), torch.stack(c_stack, dim=0))
+
+        self.rnn.permute_hidden(hidden, unsorted_indices)
 
         hidden = (torch.transpose(hidden[-self.n_directions:], 0, 1)).reshape(
             (-1, self.hidden_dim * self.n_directions))
