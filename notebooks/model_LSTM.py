@@ -11,6 +11,15 @@ def normalize(x):
 def split_by_4(x):
     return torch.split(x, x.shape[0] // 4)
 
+def combine_batch(new, old):
+    if new.shape == old.shape:
+        return new
+    b = new.shape[0]
+    return torch.cat([new, torch.zeros_like(old[b:])], dim=0) + torch.cat([torch.zeros_like(old[:b]), old[b:]], dim=0)
+
+def apply_fwd_grad(dFg, vw):
+    return torch.matmul(dFg.permute(1,0), vw.view(vw.shape[0],-1)).view(vw.shape[1],vw.shape[2])
+
 
 class RNN(nn.Module):
     def __init__(self, rnn_type, vocab_size, embedding_dim, hidden_dim, output_dim, n_layers,
@@ -164,15 +173,15 @@ class RNN(nn.Module):
         h_stack = []
         c_stack = []
         with torch.no_grad():
-            for i in range(self.rnn.num_layers):
-                h, c_t_1 = hx[i]
+            for j in range(self.rnn.num_layers):
+                h, c_t_1 = hx[j]
                 h_list = [h]
                 accumulated_grad = grad
 
-                W_ii, W_if, W_ig, W_io = split_by_4(self.rnn.__getattr__(f"weight_ih_l{i}"))
-                W_hi, W_hf, W_hg, W_ho = split_by_4(self.rnn.__getattr__(f"weight_hh_l{i}"))
-                b_ii, b_if, b_ig, b_io = split_by_4(self.rnn.__getattr__(f"bias_ih_l{i}"))
-                b_hi, b_hf, b_hg, b_ho = split_by_4(self.rnn.__getattr__(f"bias_hh_l{i}"))
+                W_ii, W_if, W_ig, W_io = split_by_4(self.rnn.__getattr__(f"weight_ih_l{j}"))
+                W_hi, W_hf, W_hg, W_ho = split_by_4(self.rnn.__getattr__(f"weight_hh_l{j}"))
+                b_ii, b_if, b_ig, b_io = split_by_4(self.rnn.__getattr__(f"bias_ih_l{j}"))
+                b_hi, b_hf, b_hg, b_ho = split_by_4(self.rnn.__getattr__(f"bias_hh_l{j}"))
                 pw_ii = torch.randn((W_ii.shape[0], 1), device=device) * epsilon
                 pw_if = torch.randn((W_if.shape[0], 1), device=device) * epsilon
                 pw_ig = torch.randn((W_ig.shape[0], 1), device=device) * epsilon
@@ -190,59 +199,100 @@ class RNN(nn.Module):
                 vb_hg = torch.randn(b_hg.shape, device=device) * epsilon
                 vb_ho = torch.randn(b_ho.shape, device=device) * epsilon
 
+                vw_ii = 0
+                vw_hi = 0
+                vw_if = 0
+                vw_hf = 0
+                vw_ig = 0
+                vw_hg = 0
+                vw_io = 0
+                vw_ho = 0
+
                 for seq in range(len(x)):
                     x_part = x[seq]
+                    h_part = h[:x_part.shape[0]]
+                    c_t_1 = c_t_1[:x_part.shape[0]]
 
-                    i = torch.sigmoid(x_part @ W_ii.T + b_ii + h @ W_hi.T + b_hi)
-                    f = torch.sigmoid(x_part @ W_if.T + b_if + h @ W_hf.T + b_hf)
-                    g = torch.tanh(x_part @ W_ig.T + b_ig + h @ W_hg.T + b_hg)
-                    o = torch.sigmoid(x_part @ W_io.T + b_io + h @ W_ho.T + b_ho)
+                    i = torch.sigmoid(x_part @ W_ii.T + b_ii + h_part @ W_hi.T + b_hi)
+                    f = torch.sigmoid(x_part @ W_if.T + b_if + h_part @ W_hf.T + b_hf)
+                    g = torch.tanh(x_part @ W_ig.T + b_ig + h_part @ W_hg.T + b_hg)
+                    o = torch.sigmoid(x_part @ W_io.T + b_io + h_part @ W_ho.T + b_ho)
                     c_t = f * c_t_1 + i * g
                     tanh_c_t = torch.tanh(c_t)
 
+                    _vw_ii = torch.matmul(pw_ii, normalize(x_part).unsqueeze(1))
+                    _vw_ii = (o * (1 - (tanh_c_t ** 2)) * g * (i * (1 - i))).unsqueeze(2).expand(_vw_ii.shape) * _vw_ii
+                    _vw_hi = torch.matmul(pw_hi, normalize(h_part).unsqueeze(1))
+                    _vw_hi = (o * (1 - (tanh_c_t ** 2)) * g * (i * (1 - i))).unsqueeze(2).expand(_vw_hi.shape) * _vw_hi
+                    _vw_if = torch.matmul(pw_if, normalize(x_part).unsqueeze(1))
+                    _vw_if = (o * (1 - (tanh_c_t ** 2)) * c_t_1 * (f * (1 - f))).unsqueeze(2).expand(_vw_if.shape) * _vw_if
+                    _vw_hf = torch.matmul(pw_hf, normalize(h_part).unsqueeze(1))
+                    _vw_hf = (o * (1 - (tanh_c_t ** 2)) * c_t_1 * (f * (1 - f))).unsqueeze(2).expand(_vw_hf.shape) * _vw_hf
+                    _vw_ig = torch.matmul(pw_ig, normalize(x_part).unsqueeze(1))
+                    _vw_ig = (o * (1 - (tanh_c_t ** 2)) * i * (1 - (g ** 2))).unsqueeze(2).expand(_vw_ig.shape) * _vw_ig
+                    _vw_hg = torch.matmul(pw_hg, normalize(h_part).unsqueeze(1))
+                    _vw_hg = (o * (1 - (tanh_c_t ** 2)) * i * (1 - (g ** 2))).unsqueeze(2).expand(_vw_hg.shape) * _vw_hg
+                    _vw_io = torch.matmul(pw_io, normalize(x_part).unsqueeze(1))
+                    _vw_io = (tanh_c_t * (o * (1 - o))).unsqueeze(2).expand(_vw_io.shape) * _vw_io
+                    _vw_ho = torch.matmul(pw_ho, normalize(h_part).unsqueeze(1))
+                    _vw_ho = (tanh_c_t * (o * (1 - o))).unsqueeze(2).expand(_vw_ho.shape) * _vw_ho
 
-                    vw_ii = torch.matmul(pw_ii, normalize(x_part).unsqueeze(1))
-                    vw_ii = (o * (1 - (tanh_c_t ** 2)) * g * (i * (1 - i))).unsqueeze(2).expand(vw_ii.shape) * vw_ii
-                    vw_hi = torch.matmul(pw_hi, normalize(h).unsqueeze(1))
-                    vw_hi = (o * (1 - (tanh_c_t ** 2)) * g * (i * (1 - i))).unsqueeze(2).expand(vw_hi.shape) * vw_hi
-                    vw_if = torch.matmul(pw_if, normalize(x_part).unsqueeze(1))
-                    vw_if = (o * (1 - (tanh_c_t ** 2)) * c_t_1 * (f * (1 - f))).unsqueeze(2).expand(vw_if.shape) * vw_if
-                    vw_hf = torch.matmul(pw_hf, normalize(h).unsqueeze(1))
-                    vw_hf = (o * (1 - (tanh_c_t ** 2)) * c_t_1 * (f * (1 - f))).unsqueeze(2).expand(vw_hf.shape) * vw_hf
-                    vw_ig = torch.matmul(pw_ig, normalize(x_part).unsqueeze(1))
-                    vw_ig = (o * (1 - (tanh_c_t ** 2)) * i * (1 - (g ** 2))).unsqueeze(2).expand(vw_ig.shape) * vw_ig
-                    vw_hg = torch.matmul(pw_hg, normalize(h).unsqueeze(1))
-                    vw_hg = (o * (1 - (tanh_c_t ** 2)) * i * (1 - (g ** 2))).unsqueeze(2).expand(vw_hg.shape) * vw_hg
-                    vw_io = torch.matmul(pw_io, normalize(x_part).unsqueeze(1))
-                    vw_io = (tanh_c_t * (o * (1 - o))).unsqueeze(2).expand(vw_io.shape) * vw_io
-                    vw_ho = torch.matmul(pw_ho, normalize(h).unsqueeze(1))
-                    vw_ho = (tanh_c_t * (o * (1 - o))).unsqueeze(2).expand(vw_ho.shape) * vw_ho
+                    new_grad_x = torch.matmul(_vw_ii, x_part.unsqueeze(2)).squeeze() + vb_ii + \
+                                 torch.matmul(_vw_if, x_part.unsqueeze(2)).squeeze() + vb_if + \
+                                 torch.matmul(_vw_ig, x_part.unsqueeze(2)).squeeze() + vb_ig + \
+                                 torch.matmul(_vw_io, x_part.unsqueeze(2)).squeeze() + vb_io
+                    new_grad_h = torch.matmul(_vw_hi, h_part.unsqueeze(2)).squeeze() + vb_hi + \
+                                 torch.matmul(_vw_hf, h_part.unsqueeze(2)).squeeze() + vb_hf + \
+                                 torch.matmul(_vw_hg, h_part.unsqueeze(2)).squeeze() + vb_hg + \
+                                 torch.matmul(_vw_ho, h_part.unsqueeze(2)).squeeze() + vb_ho
 
-                    new_grad_x = torch.matmul(vw_ii, x_part.unsqueeze(2)).squeeze() + vb_ii + \
-                                 torch.matmul(vw_if, x_part.unsqueeze(2)).squeeze() + vb_if + \
-                                 torch.matmul(vw_ig, x_part.unsqueeze(2)).squeeze() + vb_ig + \
-                                 torch.matmul(vw_io, x_part.unsqueeze(2)).squeeze() + vb_io
-                    new_grad_h = torch.matmul(vw_hi, h.unsqueeze(2)).squeeze() + vb_hi + \
-                                 torch.matmul(vw_hf, h.unsqueeze(2)).squeeze() + vb_hf + \
-                                 torch.matmul(vw_hg, h.unsqueeze(2)).squeeze() + vb_hg + \
-                                 torch.matmul(vw_ho, h.unsqueeze(2)).squeeze() + vb_ho
+                    if h_part.shape == h.shape:
 
-                    accumulated_grad = accumulated_grad + new_grad_h + new_grad_x
+                        accumulated_grad = accumulated_grad * new_grad_h + new_grad_x
 
-                    h = o * tanh_c_t
-                    c_t_1 = c_t
-                    h_list.append(h)
+                        h = o * tanh_c_t
+                        c_t_1 = c_t
+                        h_list.append(h)
+
+                        vw_ii += _vw_ii
+                        vw_hi += _vw_hi
+                        vw_if += _vw_if
+                        vw_hf += _vw_hf
+                        vw_ig += _vw_ig
+                        vw_hg += _vw_hg
+                        vw_io += _vw_io
+                        vw_ho += _vw_ho
+
+                    else:
+                        accumulated_grad = combine_batch(accumulated_grad[:h_part.shape[0]] * new_grad_h + new_grad_x, accumulated_grad)
+
+                        h = combine_batch(o * tanh_c_t, h)
+                        c_t_1 = c_t
+                        h_list.append(h)
+
+                        vw_ii += combine_batch(_vw_ii, torch.zeros_like(vw_ii))
+                        vw_hi += combine_batch(_vw_hi, torch.zeros_like(vw_hi))
+                        vw_if += combine_batch(_vw_if, torch.zeros_like(vw_if))
+                        vw_hf += combine_batch(_vw_hf, torch.zeros_like(vw_hf))
+                        vw_ig += combine_batch(_vw_ig, torch.zeros_like(vw_ig))
+                        vw_hg += combine_batch(_vw_hg, torch.zeros_like(vw_hg))
+                        vw_io += combine_batch(_vw_io, torch.zeros_like(vw_io))
+                        vw_ho += combine_batch(_vw_ho, torch.zeros_like(vw_ho))
+
 
                 # todo: add dropout as in nn.LSTM
                 x = torch.stack(h_list[1:])
-                vw_ih = torch.stack([vw_ii, vw_if, vw_ig, vw_io])
-                vw_hh = torch.stack([vw_hi, vw_hf, vw_hg, vw_ho])
-                vb_ih = torch.stack([vb_ii, vb_if, vb_ig, vb_io])
-                vb_hh = torch.stack([vb_hi, vb_hf, vb_hg, vb_ho])
-                V[i] = (vw_ih, vw_hh, vb_ih, vb_hh)
+                vw_ih = torch.cat([vw_ii, vw_if, vw_ig, vw_io], dim=1)
+                vw_hh = torch.cat([vw_hi, vw_hf, vw_hg, vw_ho], dim=1)
+                vb_ih = torch.cat([vb_ii, vb_if, vb_ig, vb_io], dim=0)
+                vb_hh = torch.cat([vb_hi, vb_hf, vb_hg, vb_ho], dim=0)
+                V[j] = (vw_ih, vw_hh, vb_ih, vb_hh)
                 h_stack.append(h)
                 c_stack.append(c_t)
-        packed_output, (hidden, cell) = x, (torch.stack(h_stack, dim=0), torch.stack(c_stack, dim=0))
+
+                grad += accumulated_grad
+
+        packed_output, (hidden, _) = x, (torch.stack(h_stack, dim=0), torch.zeros_like(c_stack[0]))
 
         self.rnn.permute_hidden(hidden, unsorted_indices)
 
@@ -252,12 +302,19 @@ class RNN(nn.Module):
         # # Dropout
         # hidden = self.drop(hidden)
 
-        # Decode
-        decoded = self.decoder(hidden).squeeze(1)
+        vn = torch.randn([self.decoder.weight.shape[0], 1], device=device, dtype=torch.float32) * epsilon
+        vb = vn.clone().squeeze().expand(self.decoder.bias.shape)
+        vw = torch.matmul(vn, normalize(hidden).unsqueeze(1))
+        new_grad = torch.matmul(vw, hidden.unsqueeze(2)).squeeze() + vb
+        grad = torch.matmul(grad, self.decoder.weight.permute(1, 0)) + new_grad
 
-        dLdout = torch.zeros_like(x)
+        with torch.no_grad():
+            # Decode
+            decoded = self.decoder(hidden).squeeze(1)
 
-        out = torch.autograd.Variable(x, requires_grad=True)
+        dLdout = torch.zeros_like(decoded)
+
+        out = torch.autograd.Variable(decoded, requires_grad=True)
         out.grad = torch.zeros_like(out)
         L = loss(out, y)
 
@@ -268,21 +325,27 @@ class RNN(nn.Module):
         ##grad_transfer = dLdout.permute(1, 0) ## Batch x n_classes
         ##tot_norm = torch.sqrt(tot_norm)
 
-        dFg = (dLdout * old_grad).sum(1, keepdim=True)
+        dFg = (dLdout * grad).sum(1, keepdim=True)
 
-        for i, layer in enumerate(self.rnn):
-            for w in [self.rnn.weight_ih_l[i],
-                    self.rnn.weight_hh_l[i],
-                    self.rnn.bias_ih_l[i],
-                    self.rnn.bias_hh_l[i]]:
+        for i in range(self.rnn.num_layers):
+            for w in [self.rnn.__getattr__(f"weight_ih_l{i}"),
+                        self.rnn.__getattr__(f"weight_hh_l{i}"),
+                        self.rnn.__getattr__(f"bias_ih_l{i}"),
+                        self.rnn.__getattr__(f"bias_hh_l{i}")]:
                 if w.grad is None:
                     w.grad = torch.zeros_like(w)
 
             vw_ih, vw_hh, vb_ih, vb_hh = V[i]
-            self.rnn.weight_ih_l[i].grad += dFg * vw_ih
-            self.rnn.weight_hh_l[i].grad += dFg * vw_hh
-            self.rnn.bias_ih_l[i].grad += dFg * vb_ih
-            self.rnn.bias_hh_l[i].grad += dFg * vb_hh
+            self.rnn.__getattr__(f"weight_ih_l{i}").grad += apply_fwd_grad(dFg, vw_ih)
+            self.rnn.__getattr__(f"weight_hh_l{i}").grad += apply_fwd_grad(dFg, vw_hh)
+            self.rnn.__getattr__(f"bias_ih_l{i}").grad += dFg.sum() * vb_ih
+            self.rnn.__getattr__(f"bias_hh_l{i}").grad += dFg.sum() * vb_hh
+        if self.decoder.weight.grad is None:
+            self.decoder.weight.grad = torch.zeros_like(self.decoder.weight)
+        if self.decoder.bias.grad is None:
+            self.decoder.bias.grad = torch.zeros_like(self.decoder.bias)
+        self.decoder.weight.grad += apply_fwd_grad(dFg, vw)
+        self.decoder.bias.grad += dFg.sum() * vb
 
 
         return decoded
