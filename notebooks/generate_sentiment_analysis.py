@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import torch
 from torchtext import data
 from torchtext import datasets
+from tqdm import tqdm
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 from model_LSTM import RNN
@@ -357,13 +358,13 @@ def train(model, iterator, optimizer, criterion):
     epoch_loss = 0
     epoch_acc = 0
     model.train()
-    for batch in iterator:
+    for batch in tqdm(iterator):
         optimizer.zero_grad()
-        predictions = model.fwd_mode(batch.text, batch.label, criterion)
-        # predictions = model(batch.text)
+        # predictions = model.fwd_mode(batch.text, batch.label, criterion)
+        predictions = model(batch.text)
         loss = criterion(predictions, batch.label)
         acc = accuracy(predictions, batch.label)
-        # loss.backward()
+        loss.backward()
         optimizer.step()
         epoch_loss += loss.item()
         epoch_acc += acc.item()
