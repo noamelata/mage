@@ -23,6 +23,19 @@ from data_dir import data_dir as model_dir
 # Directory for datasets and pretrained word vectors
 datasets_dir = os.path.join(model_dir, 'sentiment_analysis/data')
 
+def set_deterministic(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.enabled = False
+
+set_deterministic()
+
 # %%
 
 # Parameters
@@ -360,11 +373,11 @@ def train(model, iterator, optimizer, criterion):
     model.train()
     for batch in tqdm(iterator):
         optimizer.zero_grad()
-        # predictions = model.fwd_mode(batch.text, batch.label, criterion)
-        predictions = model(batch.text)
+        predictions = model.fwd_mode(batch.text, batch.label, criterion)
+        # predictions = model(batch.text)
         loss = criterion(predictions, batch.label)
         acc = accuracy(predictions, batch.label)
-        loss.backward()
+        # loss.backward()
         optimizer.step()
         epoch_loss += loss.item()
         epoch_acc += acc.item()
@@ -413,7 +426,7 @@ for epoch in range(N_EPOCHS):
     #     best_valid_loss = valid_loss
     #     state_dict_best = copy.deepcopy(model.state_dict())
 
-    show_step = N_EPOCHS // 20
+    show_step = N_EPOCHS // N_EPOCHS
     if (epoch + 1) % show_step == 0 or epoch == 0:
         print(f'Epoch: {epoch + 1:02} | Epoch Time: {epoch_mins}m {epoch_secs}s')
         print(f'\tTrain Loss: {train_loss:.3f} | Train Acc: {train_acc * 100:.2f}%')
